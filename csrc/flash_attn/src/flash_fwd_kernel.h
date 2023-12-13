@@ -54,6 +54,9 @@ inline __device__ void softmax_rescale_o(Tensor0 &scores, Tensor1 &scores_max, T
     }
 };
 
+
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename TiledCopy>
@@ -432,10 +435,29 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
+        // if (cute::thread0()) { print("before3"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        if (cute::thread0()){
+            print("before softmax \n");
+            Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+            #pragma unroll
+            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
+                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
+                print("|\n");
+            }}
         masking_step == 0
             ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
             : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
-
+        // if (cute::thread0()) { print("after3"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        
+        // if (cute::thread0()) { print(acc_o_rowcol); }
+        if (cute::thread0()){
+            print("after softmax \n");
+            Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+            #pragma unroll
+            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
+                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
+                print("|\n");
+            }}
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
@@ -458,10 +480,25 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                  block_row_idx, block_col_idx, kNWarps);
         }
         // if (cute::thread0()) { print(tOrP); }
-
+        if (cute::thread0()){
+            print("before GEMM \n");
+            Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+            #pragma unroll
+            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
+                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
+                print("|\n");
+            }}
         flash::gemm_A_in_regs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
-        // if (cute::thread0()) { print(scores); }
+        // if (cute::thread0()) { print("\n"); print(scores);print("\n"); }
 
+        if (cute::thread0()){
+            print("after GEMM\n");
+            Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+            #pragma unroll
+            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
+                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
+                print("|\n");
+            }}
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
             --n_block;
@@ -520,9 +557,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                 params.window_size_left, params.window_size_right
             );
         }
-
+        if (cute::thread0()) { print("before4"); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        
         softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
-
+        if (cute::thread0()) { print("after4"); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
         // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
@@ -563,7 +602,14 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
 
     // if (cute::thread0()) { print(acc_o_rowcol); }
-
+    if (cute::thread0()){
+        print("final \n");
+        Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+        #pragma unroll
+        for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
+            for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
+            print("|\n");
+        }}
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = flash::convert_type<Element>(acc_o);
     Tensor sO = make_tensor(sQ.data(), typename Kernel_traits::SmemLayoutO{});    // (SMEM_M,SMEM_N)
@@ -1018,7 +1064,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             );
         }
 
-        // if (cute::thread0()) { print(scores); }
+        // if (cute::thread0()) { print("\n"); print(scores);print("\n"); }
         // We don't put the masking before the matmul S = Q K^T because we don't clear sK
         // for rows outside actual_seqlen_k. So those rows could have Inf / NaN, and the matmul
         // can produce Inf / NaN.
@@ -1047,10 +1093,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         }
 
         // We have key_padding_mask so we'll need to Check_inf
+        if (cute::thread0()) { print("before"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
         masking_step == 0
             ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local || !Is_even_MN>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
             : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local || !Is_even_MN>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
-        // if (cute::thread0()) { print(scores_max); print(scores_sum); print(scores); }
+        if (cute::thread0()) { print("after"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
 
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
@@ -1059,7 +1106,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         Tensor tOrP = make_tensor(rP.data(), flash::convert_layout_rowcol_Aregs<Kernel_traits::TiledMma>(rP.layout()));
 
         flash::gemm_A_in_regs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
-        // if (cute::thread0()) { print(scores); }
+        // if (cute::thread0()) { print("\n"); print(scores);print("\n"); }
 
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
@@ -1119,8 +1166,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 params.window_size_left, params.window_size_right
             );
         }
+        if (cute::thread0()) { print("before  222"); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
         softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
-
+        if (cute::thread0()) { print("after  222"); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
         // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
