@@ -435,29 +435,28 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
-        // if (cute::thread0()) { print("before3"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+        
         if (cute::thread0()){
             print("before softmax \n");
+            print("accu_o \n");
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
-            #pragma unroll
-            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
-                print("|\n");
-            }}
-        masking_step == 0
-            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
-            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
-        // if (cute::thread0()) { print("after3"); print(masking_step); print("\n"); print(scores_max); print("\n"); print(scores_sum); print("\n"); print(scores);print("\n"); }
+            print_tensor(acc_o_rowcol );
+            print("score \n");
+            print_tensor(scores);
+            }
+        // masking_step == 0
+        //     ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
+        //     : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
         
-        // if (cute::thread0()) { print(acc_o_rowcol); }
-        if (cute::thread0()){
+        if (cute::thread0())
+        {
             print("after softmax \n");
+            print("accu_o \n");
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
-            #pragma unroll
-            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
-                print("|\n");
-            }}
+            print_tensor(acc_o_rowcol );
+            print("score \n");
+            print_tensor(scores);
+        }
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
@@ -480,25 +479,27 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                  block_row_idx, block_col_idx, kNWarps);
         }
         // if (cute::thread0()) { print(tOrP); }
-        if (cute::thread0()){
+        if (cute::thread0())
+        {
             print("before GEMM \n");
+            print("accu_o \n");
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
-            #pragma unroll
-            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
-                print("|\n");
-            }}
+            print_tensor(acc_o_rowcol );
+            print("score \n");
+            print_tensor(scores);
+        }
         flash::gemm_A_in_regs(acc_o, tOrP, tOrVt, tOsVt, tiled_mma, smem_tiled_copy_V, smem_thr_copy_V);
         // if (cute::thread0()) { print("\n"); print(scores);print("\n"); }
 
-        if (cute::thread0()){
-            print("after GEMM\n");
+        if (cute::thread0())
+        {
+            print("after GEMM \n");
+            print("accu_o \n");
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
-            #pragma unroll
-            for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-                for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
-                print("|\n");
-            }}
+            print_tensor(acc_o_rowcol );
+            print("score \n");
+            print_tensor(scores);
+        }
         // This check is at the end of the loop since we always have at least 1 iteration
         if (n_masking_steps > 1 && n_block <= n_block_min) {
             --n_block;
@@ -587,10 +588,19 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
 
     // Epilogue
-
+    
     // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
     Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
     Tensor lse = make_fragment_like(scores_sum);
+    if (cute::thread0())
+    {
+        print("before final \n");
+        print("accu_o \n");
+        print_tensor(acc_o_rowcol);
+        // print("lse \n");
+        // Tensor lse_o_rowcol = make_tensor(lse.data(), flash::convert_layout_acc_rowcol(lse.layout()));
+        // print_tensor(lse_o_rowcol);
+    }
     #pragma unroll
     for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
         float sum = scores_sum(mi);
@@ -602,14 +612,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     }
 
     // if (cute::thread0()) { print(acc_o_rowcol); }
-    if (cute::thread0()){
-        print("final \n");
-        Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
-        #pragma unroll
-        for (int mi = 0; mi < size<0>(acc_o_rowcol); ++mi) {
-            for (int ni = 0; ni < size<1>(acc_o_rowcol); ++ni) { print(acc_o_rowcol(mi, ni)); print(",");};
-            print("|\n");
-        }}
+    if (cute::thread0())
+    {
+        print("after final \n");
+        print("accu_o \n");
+        print_tensor(acc_o_rowcol);
+        // print("lse \n");
+        // Tensor lse_o_rowcol = make_tensor(lse.data(), flash::convert_layout_acc_rowcol(lse.layout()));
+        // print_tensor(lse_o_rowcol);
+    }
     // Convert acc_o from fp32 to fp16/bf16
     Tensor rO = flash::convert_type<Element>(acc_o);
     Tensor sO = make_tensor(sQ.data(), typename Kernel_traits::SmemLayoutO{});    // (SMEM_M,SMEM_N)

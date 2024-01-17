@@ -192,6 +192,7 @@ def attention_ref(
     window_size=(-1, -1),  # -1 means infinite window size
     upcast=True,
     reorder_ops=False,
+    alibi_slopes=None,
 ):
     """
     Arguments:
@@ -222,30 +223,56 @@ def attention_ref(
     k = repeat(k, "b s h d -> b s (h g) d", g=q.shape[2] // k.shape[2])
     v = repeat(v, "b s h d -> b s (h g) d", g=q.shape[2] // v.shape[2])
     d = q.shape[-1]
-    scores = torch.einsum("bthd,bshd->bhts", q , k)
+    if alibi_slopes is not None:
+        i_size = q.shape[1]
+        j_size = k.shape[1]
+        n_heads= q.shape[2]
+        device = q.device
+        context_position  = torch.arange(i_size, device=device)[:, None]
+        memory_position   = torch.arange(j_size, device=device)[None, :]
+        relative_position = torch.abs(memory_position - context_position)
+        # [n_heads, max_token_length, max_token_length]
+        relative_position = relative_position.unsqueeze(0).expand(n_heads, -1, -1)
+        slopes = torch.Tensor(alibi_slopes).to(device) * 1
+        alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+        alibi = alibi.unsqueeze(0)
+        # get the upper triangular part of the matrix
+        #alibi = torch.tril(alibi, diagonal=1)
+        print(alibi.shape)
+        print(alibi[0,0])
+        #scores = torch.einsum("bihd,bhij,bjhd->bhij", q , alibi ,k)
+        scores = torch.einsum("bthd,bshd->bhts", q , k)
+        scores = scores + alibi
+    else:
+        scores = torch.einsum("bthd,bshd->bhts", q , k)
     attention = scores
-    output = torch.einsum("bhts,bshd->bthd", attention, v )
+    
+    
     # if not reorder_ops:
     #     scores = torch.einsum("bthd,bshd->bhts", q / math.sqrt(d), k)
     # else:
     #     scores = torch.einsum("bthd,bshd->bhts", q, k / math.sqrt(d))
     # if key_padding_mask is not None:
     #     scores.masked_fill_(rearrange(~key_padding_mask, "b s -> b 1 1 s"), float("-inf"))
-    # if window_size[0] >= 0 or window_size[1] >= 0:
-    #     local_mask = construct_local_mask(
-    #         seqlen_q,
-    #         seqlen_k,
-    #         window_size,
-    #         query_padding_mask,
-    #         key_padding_mask,
-    #         q.device,
-    #     )
-    #     scores.masked_fill_(local_mask, float("-inf"))
+    if window_size[0] >= 0 or window_size[1] >= 0:
+        local_mask = construct_local_mask(
+            seqlen_q,
+            seqlen_k,
+            window_size,
+            query_padding_mask,
+            key_padding_mask,
+            q.device,
+        )
+        scores.masked_fill_(local_mask, 0)
+        print("========== local mask ===========")
+        print(scores[0,0])
+        print("^^^^^^^^^^^^^^^^^^^^^^^^^^^")
     # attention = torch.softmax(scores, dim=-1)
     # #attention = scores
     # # Some rows might be completely masked out so we fill them with zero instead of NaN
-    # if window_size[0] >= 0 or window_size[1] >= 0:
-    #     attention = attention.masked_fill(torch.all(local_mask, dim=-1, keepdim=True), 0.0)
+    if window_size[0] >= 0 or window_size[1] >= 0:
+        attention = attention.masked_fill(torch.all(local_mask, dim=-1, keepdim=True), 0.0)
+    output = torch.einsum("bhts,bshd->bthd", attention, v )
     # # We want to mask here so that the attention matrix doesn't have any NaNs
     # # Otherwise we'll get NaN in dV
     # if query_padding_mask is not None:
@@ -299,6 +326,7 @@ def attention_qkvpacked_ref(
     window_size=(-1, -1),  # -1 means infinite window size
     upcast=True,
     reorder_ops=False,
+    alibi_slopes=None,
 ):
     return attention_ref(
         qkv[:, :, 0],
@@ -312,6 +340,7 @@ def attention_qkvpacked_ref(
         causal=causal,
         window_size=window_size,
         reorder_ops=reorder_ops,
+        alibi_slopes=alibi_slopes
     )
 
 
@@ -560,8 +589,12 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
     # qkv = torch.randn(
     #     batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     # )
+    alibi_slopes = torch.ones(nheads, device=device, dtype=torch.float32)*0.9
+    alibi_slopes = None
     out, lse, S_dmask = flash_attn_qkvpacked_func(
-        qkv, dropout_p,softmax_scale=1, causal=causal, window_size=window_size, return_attn_probs=True
+        qkv, dropout_p,softmax_scale=1, causal=causal, 
+        window_size=window_size, return_attn_probs=True,
+        alibi_slopes=repeat(alibi_slopes, "nh -> b nh", b=batch_size) if alibi_slopes is not None else None
     )
     if dropout_p > 0.0:
         S_dmask_converted = convert_flash_attn_S_to_softmax(
@@ -596,12 +629,12 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
         dropout_mask = None
 
     out_ref, attn_ref = attention_qkvpacked_ref(
-        qkv, None, dropout_p, dropout_mask, causal=causal, window_size=window_size
+        qkv, None, dropout_p, dropout_mask, causal=causal, window_size=window_size,alibi_slopes=alibi_slopes
     )
-    out_pt, attn_pt = attention_qkvpacked_ref(
-        qkv, None, dropout_p, dropout_mask, causal=causal, window_size=window_size,
-        upcast=False, reorder_ops=True,
-    )
+    # out_pt, attn_pt = attention_qkvpacked_ref(
+    #     qkv, None, dropout_p, dropout_mask, causal=causal, window_size=window_size,
+    #     upcast=False, reorder_ops=True,
+    # )
     # v = qkv[:, :, 2].float()
     # qk = torch.einsum('bshd,bthd->bhst', qkv[:, :, 0], qkv[:, :, 1]).float()
     # if causal:
@@ -633,13 +666,16 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
     # print(f"Output max diff: {(out - out_ref).abs().max().item()}")
     # print(f"Output mean diff: {(out - out_ref).abs().mean().item()}")
 
-    print("==================================")
+    print("=============Attention: q@k==============")
+    print(attn_ref[0,0])
+
     # print(qkv[0,:,0,0])
     # print(qkv[0,:,1,0])
     # print(qkv[0,:,2,0])
-    print("==================================")
-    # print(out[0,:,0])
-    # print(out_ref[0,:,0])
+    print("==========Flash Attn Result ===============")
+    print(out[0,:,0])
+    print("==========Ground Attn Result ===============")
+    print(out_ref[0,:,0])
 
     # print(lse[0,0])
     # print(S_dmask[0,0].shape)
@@ -679,4 +715,4 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
     #     assert (dqkv - dqkv_ref).abs().max().item() <= 2 * (dqkv_pt - dqkv_ref).abs().max().item()
 
 
-test_flash_attn_qkvpacked(4,5,0,False,False,torch.float16)
+test_flash_attn_qkvpacked(4,5,0,True,False,torch.float16)
