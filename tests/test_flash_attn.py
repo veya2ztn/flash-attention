@@ -223,6 +223,7 @@ def attention_ref(
     k = repeat(k, "b s h d -> b s (h g) d", g=q.shape[2] // k.shape[2])
     v = repeat(v, "b s h d -> b s (h g) d", g=q.shape[2] // v.shape[2])
     d = q.shape[-1]
+
     if alibi_slopes is not None:
         i_size = q.shape[1]
         j_size = k.shape[1]
@@ -230,19 +231,23 @@ def attention_ref(
         device = q.device
         context_position  = torch.arange(i_size, device=device)[:, None]
         memory_position   = torch.arange(j_size, device=device)[None, :]
-        relative_position = torch.abs(memory_position - context_position)
+        relative_position = memory_position - context_position
         # [n_heads, max_token_length, max_token_length]
         relative_position = relative_position.unsqueeze(0).expand(n_heads, -1, -1)
         slopes = torch.Tensor(alibi_slopes).to(device) * 1
-        alibi = slopes.unsqueeze(1).unsqueeze(1) * relative_position
+        #alibi = slopes.unsqueeze(1).unsqueeze(1) * torch.abs(relative_position)
+        alibi = torch.pow(slopes, -relative_position)
         alibi = alibi.unsqueeze(0)
         # get the upper triangular part of the matrix
-        #alibi = torch.tril(alibi, diagonal=1)
+        alibi = torch.tril(alibi, diagonal=0)
+
+        print("=========== alibi start ================")
         print(alibi.shape)
         print(alibi[0,0])
+        print("=========== alibi end ================")
         #scores = torch.einsum("bihd,bhij,bjhd->bhij", q , alibi ,k)
         scores = torch.einsum("bthd,bshd->bhts", q , k)
-        scores = scores + alibi
+        scores = scores * alibi
     else:
         scores = torch.einsum("bthd,bshd->bhts", q , k)
     attention = scores
@@ -559,6 +564,7 @@ def get_dropout_fraction(
     dropped_total = dropped.sum()
     return dropped.sum() / valid.sum()
 
+import time
 def rmsenorm(x):
     return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6)
 @pytest.mark.parametrize("dtype", ([torch.float16]))
@@ -590,7 +596,8 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
     #     batch_size, seqlen, 3, nheads, d, device=device, dtype=dtype, requires_grad=True
     # )
     alibi_slopes = torch.ones(nheads, device=device, dtype=torch.float32)*0.9
-    alibi_slopes = None
+
+    #alibi_slopes = None
     out, lse, S_dmask = flash_attn_qkvpacked_func(
         qkv, dropout_p,softmax_scale=1, causal=causal, 
         window_size=window_size, return_attn_probs=True,
@@ -627,7 +634,7 @@ def test_flash_attn_qkvpacked(seqlen, d, dropout_p, causal, local, dtype):
         print(f"Actual dropout fraction: {dropout_fraction}")
     else:
         dropout_mask = None
-
+    time.sleep(0.3)
     out_ref, attn_ref = attention_qkvpacked_ref(
         qkv, None, dropout_p, dropout_mask, causal=causal, window_size=window_size,alibi_slopes=alibi_slopes
     )

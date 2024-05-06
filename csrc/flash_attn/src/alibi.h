@@ -42,19 +42,21 @@ inline __device__ void apply_alibi(Tensor<Engine, Layout> &tensor,
                 #pragma unroll
                 for (int j = 0; j < size<1, 0>(tensor); ++j) {
                     const int col_idx = col_idx_base + j;
-                    if (col_idx < row_idx)
-                    {
-                        alibi = alibi_slope_unscaled *  (row_idx - col_idx) ;
-                    }
-                    else{
-                        alibi = alibi_slope_unscaled *  (col_idx - row_idx) ;
-                    }
+                    // if (col_idx < row_idx)
+                    // {
+                    //     alibi = alibi_slope_unscaled *  (row_idx - col_idx) ;
+                    // }
+                    // else{
+                    //     alibi = alibi_slope_unscaled *  (col_idx - row_idx) ;
+                    // }
 
                     //const float alibi = alibi_slope_unscaled * col_idx;
-                    if (col_idx < max_seqlen_k && row_idx < max_seqlen_q) {
-                        tensor(make_coord(i, mi), make_coord(j, nj)) += alibi;
+                    if (col_idx < row_idx) // Downtriangle
+                    {
+                        tensor(make_coord(i, mi), make_coord(j, nj)) *= powf(alibi_slope_unscaled, row_idx - col_idx);
                     }
-                }
+                    
+                } 
             }
         }
     }

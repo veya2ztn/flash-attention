@@ -132,7 +132,7 @@ inline __device__ void apply_mask(Tensor<Engine, Layout> &tensor, const int max_
                 // Without the "make_coord" we get wrong results
                 #pragma unroll
                 for (int mi = 0; mi < size<0>(tensor); ++mi) {
-                    tensor(mi, make_coord(j, nj)) = -INFINITY;
+                    tensor(mi, make_coord(j, nj)) = 0;//-INFINITY;
                 }
             }
         }
