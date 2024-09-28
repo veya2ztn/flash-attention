@@ -649,8 +649,7 @@ def test_flash_attn_func(b_sq, nh_hd, tp_world_size, dtype):
             device="cuda"
         )
 
-        triton_out = flash_attn_func_triton(
-            q, k, v, alibi, True, hd**(-0.5))
+        triton_out = flash_attn_func_triton(q, k, v, alibi, True, hd**(-0.5))
         triton_out.backward(dout)
         triton_dq, q.grad = q.grad.clone(), None
         triton_dk, k.grad = k.grad.clone(), None
